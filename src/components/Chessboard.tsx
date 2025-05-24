@@ -29,47 +29,38 @@ export default function Chessboard({ level }: ChessboardProps) {
   const [evaluations, setEvaluations] = useState<Record<string, number>>({});
   const [isThinking, setIsThinking] = useState(false);
 
-  const getPositionEvaluation = async (fen: string): Promise<number> => {
-    try {
-      const response = await fetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`);
-      const data: LichessEvaluation = await response.json();
-      
-      if (data.pvs && data.pvs[0]) {
-        if (data.pvs[0].cp !== undefined) {
-          return data.pvs[0].cp / 100;
-        }
-        if (data.pvs[0].mate !== undefined) {
-          return data.pvs[0].mate > 0 ? 100 : -100;
-        }
-      }
-      return 0;
-    } catch (error) {
-      console.error('Error getting evaluation:', error);
-      return 0;
-    }
-  };
+  // Add a debounced evaluation function
+  const evaluatePositions = async (moves: ChessMove[], baseGame: Chess, square: Square) => {
+    const batchSize = 3; // Process 3 positions at a time
+    const evals: Record<string, number> = {};
+    
+    for (let i = 0; i < moves.length; i += batchSize) {
+      const batch = moves.slice(i, i + batchSize);
+      const promises = batch.map(async (move) => {
+        const tempGame = new Chess(baseGame.fen());
+        tempGame.move({ from: square, to: move.to, promotion: 'q' });
+        const evaluation = await getPositionEvaluation(tempGame.fen());
+        return { move, evaluation };
+      });
 
-  const getComputerMove = async (fen: string): Promise<string | null> => {
-    try {
-      setIsThinking(true);
-      const response = await fetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`);
-      const data: LichessEvaluation = await response.json();
-      
-      if (data.pvs && data.pvs[0] && data.pvs[0].moves) {
-        const firstMove = data.pvs[0].moves.split(' ')[0];
-        return firstMove;
+      const results = await Promise.all(promises);
+      results.forEach(({ move, evaluation }) => {
+        evals[move.to] = evaluation;
+        // Update evaluations incrementally as they come in
+        setEvaluations(prev => ({ ...prev, [move.to]: evaluation }));
+      });
+
+      // Add a small delay between batches to prevent rate limiting
+      if (i + batchSize < moves.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-      return null;
-    } catch (error) {
-      console.error('Error getting computer move:', error);
-      return null;
-    } finally {
-      setIsThinking(false);
     }
+
+    return evals;
   };
 
   const handleSquareClick = async (square: Square) => {
-    if (isThinking) return; // Prevent moves while computer is thinking
+    if (isThinking) return;
 
     if (selectedPiece) {
       try {
@@ -108,16 +99,51 @@ export default function Chessboard({ level }: ChessboardProps) {
         const moves = game.moves({ square, verbose: true }) as ChessMove[];
         setLegalMoves(moves);
         
-        // Calculate evaluations for each legal move
-        const evals: Record<string, number> = {};
-        for (const move of moves) {
-          const tempGame = new Chess(game.fen());
-          tempGame.move({ from: square, to: move.to, promotion: 'q' });
-          const evaluation = await getPositionEvaluation(tempGame.fen());
-          evals[move.to] = evaluation;
-        }
-        setEvaluations(evals);
+        // Clear previous evaluations
+        setEvaluations({});
+        
+        // Start evaluating positions in batches
+        evaluatePositions(moves, game, square).catch(console.error);
       }
+    }
+  };
+
+  const getPositionEvaluation = async (fen: string): Promise<number> => {
+    try {
+      const response = await fetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`);
+      const data: LichessEvaluation = await response.json();
+      
+      if (data.pvs && data.pvs[0]) {
+        if (data.pvs[0].cp !== undefined) {
+          return data.pvs[0].cp / 100;
+        }
+        if (data.pvs[0].mate !== undefined) {
+          return data.pvs[0].mate > 0 ? 100 : -100;
+        }
+      }
+      return 0;
+    } catch (error) {
+      console.error('Error getting evaluation:', error);
+      return 0;
+    }
+  };
+
+  const getComputerMove = async (fen: string): Promise<string | null> => {
+    try {
+      setIsThinking(true);
+      const response = await fetch(`https://lichess.org/api/cloud-eval?fen=${encodeURIComponent(fen)}&multiPv=1`);
+      const data: LichessEvaluation = await response.json();
+      
+      if (data.pvs && data.pvs[0] && data.pvs[0].moves) {
+        const firstMove = data.pvs[0].moves.split(' ')[0];
+        return firstMove;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error getting computer move:', error);
+      return null;
+    } finally {
+      setIsThinking(false);
     }
   };
 
